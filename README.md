@@ -18,7 +18,7 @@ Create an API key under **Agents & API** in your SpecStream workspace, then add 
 
 ### Extract API
 
-**Extract Pages** returns the main text, title and published date of up to 20 URLs a call, read live (`POST /v1/extract`). It reads web pages, PDF, Word and Excel. Separate the URLs with newlines or commas, and choose Markdown or Plain Text as the Output Format.
+**Extract Pages** returns the main text, title and published date of up to 20 URLs a call, read live, or from SpecStream's own dated copy when a page is slow or refuses (`POST /v1/extract`). It reads web pages, PDF, Word and Excel. Separate the URLs with newlines or commas, and choose Markdown or Plain Text as the Output Format.
 
 ### Deep Search
 
@@ -60,4 +60,4 @@ npm run lint
 npm test
 ```
 
-The package is published from GitHub Actions with provenance, as n8n requires. Source and issues: [github.com/specstream/specstream-tools](https://github.com/specstream/specstream-tools). MIT license.
+The package is published from GitHub Actions with provenance, as n8n requires. Source and issues: [github.com/specstream/n8n-nodes-specstream](https://github.com/specstream/n8n-nodes-specstream). MIT license.

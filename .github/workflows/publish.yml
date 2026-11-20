@@ -1,0 +1,40 @@
+# Publishes n8n-nodes-specstream to npm with a provenance statement.
+#
+# n8n only verifies community nodes that are published from GitHub Actions with
+# provenance, from the node's own repository. The npm package trusts this file
+# (publish.yml in specstream/n8n-nodes-specstream) as its npm Trusted Publisher,
+# so no token is stored here.
+#
+# Runs when a GitHub release is published, or from the Actions tab:
+#   gh workflow run publish.yml
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # npm 11.5+ publishes through an npm Trusted Publisher (OIDC) with no token.
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm test
+      - name: Publish with provenance
+        env:
+          # prepublishOnly runs `n8n-node prerelease`, which stops a publish unless RELEASE_MODE is set.
+          RELEASE_MODE: "true"
+          NPM_CONFIG_PROVENANCE: "true"
+        run: npm publish --access public

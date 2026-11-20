@@ -1,9 +1,9 @@
 {
   "name": "n8n-nodes-specstream",
-  "version": "1.4.0",
+  "version": "1.5.1",
   "description": "The live web data engine. One platform to build, search, extract, enrich, map, and monitor data across the entire web.",
   "license": "MIT",
-  "homepage": "https://specstream.ai/docs/integrations",
+  "homepage": "https://github.com/specstream/n8n-nodes-specstream#readme",
   "keywords": [
     "n8n-community-node-package",
     "specstream",
@@ -28,11 +28,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/specstream/specstream-tools.git",
-    "directory": "integrations/n8n"
+    "url": "git+https://github.com/specstream/n8n-nodes-specstream.git"
   },
   "bugs": {
-    "url": "https://github.com/specstream/specstream-tools/issues"
+    "url": "https://github.com/specstream/n8n-nodes-specstream/issues"
   },
   "scripts": {
     "build": "n8n-node build",
@@ -40,7 +39,7 @@
     "dev": "n8n-node dev",
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
-    "test": "n8n-node build && node test/confirm_max_usd.test.js && node test/specstream.test.js && node test/trigger.test.js && node test/node.test.js && node test/find_rows.test.js && node test/speed.test.js",
+    "test": "n8n-node build && node test/confirm_max_usd.test.js && node test/specstream.test.js && node test/trigger.test.js && node test/node.test.js && node test/find_rows.test.js && node test/speed.test.js && node test/research.test.js",
     "prepublishOnly": "n8n-node prerelease",
     "release": "n8n-node release"
   },

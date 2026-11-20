@@ -7,10 +7,22 @@ import type {
   INodeTypeDescription,
   JsonObject,
 } from "n8n-workflow";
-import { NodeApiError, NodeConnectionTypes, NodeOperationError } from "n8n-workflow";
+import { NodeApiError, NodeConnectionTypes, NodeOperationError, sleep } from "n8n-workflow";
 
 import { requireConfirmMaxUsd } from "../../lib/confirm_max_usd.js";
 import { flatRowsById, flattenRow, isNotFound, listIdOf, rowMatches, resolveBase, runKey } from "../../lib/specstream.js";
+
+const RESEARCH_DEPTHS = ["quick", "standard", "deep"];
+const RESEARCH_ENDED = ["completed", "failed", "cancelled", "payment_required"];
+const RESEARCH_POLL_MS = 5000;
+
+// Sites typed with commas or newlines between them.
+function siteList(raw: unknown): string[] {
+  return String(raw ?? "")
+    .split(/[\r\n,]+/)
+    .map((site) => site.trim())
+    .filter(Boolean);
+}
 
 export class Specstream implements INodeType {
   description: INodeTypeDescription = {
@@ -20,7 +32,7 @@ export class Specstream implements INodeType {
     group: ["transform"],
     version: 1,
     subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
-    description: "The live web data engine. Search API, Extract API and Deep Search with a source URL and read time on every value.",
+    description: "The live web data engine. Search API, Extract API, research reports and Deep Search with a source URL and read time on every value.",
     defaults: { name: "SpecStream" },
     usableAsTool: true,
     inputs: [NodeConnectionTypes.Main],
@@ -75,6 +87,8 @@ export class Specstream implements INodeType {
         displayOptions: { show: { resource: ["web"] } },
         options: [
           { name: "Extract Pages", value: "extractPages", action: "Extract pages", description: "Read the main text, title and published date of 1 to 20 web pages, PDFs, Word or Excel files live ($0.80 per 1,000 pages)" },
+          { name: "Get Research Report", value: "getResearch", action: "Get a research report", description: "Read a research report by its ID: the status, the text and the page behind each cited sentence (free)" },
+          { name: "Research", value: "research", action: "Write a research report", description: "Answer a question with a written report from the live web, with the page behind each cited sentence ($0.10, $0.30 or $1.00 a report by depth)" },
           { name: "Web Search", value: "webSearch", action: "Search the web", description: "Answer a question from the live web in seconds with the Search API ($5 per 1,000 searches of up to 10 results, $1 per 1,000 on the fast speed)" },
         ],
         default: "webSearch",
@@ -107,6 +121,101 @@ export class Specstream implements INodeType {
         default: "default",
         description: "Fast returns the ranked results in about a second and costs $1 per 1,000 searches",
         displayOptions: { show: { operation: ["webSearch"] } },
+      },
+      {
+        displayName: "Question",
+        name: "research_input",
+        type: "string",
+        typeOptions: { rows: 3 },
+        default: "",
+        required: true,
+        description: "The question to answer, in plain words, up to 15,000 characters",
+        displayOptions: { show: { operation: ["research"] } },
+      },
+      {
+        displayName: "Depth",
+        name: "research_depth",
+        type: "options",
+        options: [
+          { name: "Quick", value: "quick", description: "$0.10 a report, about a minute" },
+          { name: "Standard", value: "standard", description: "$0.30 a report, about four minutes" },
+          { name: "Deep", value: "deep", description: "$1.00 a report, about five minutes" },
+        ],
+        default: "quick",
+        description: "How far the research goes. The price is taken from your balance once, when the report is delivered.",
+        displayOptions: { show: { operation: ["research"] } },
+      },
+      {
+        displayName: "Wait for the Report",
+        name: "research_wait",
+        type: "boolean",
+        default: true,
+        description: "Whether the step waits until the report is ready. Off, it returns the Report ID at once; read the report later with Get Research Report.",
+        displayOptions: { show: { operation: ["research"] } },
+      },
+      {
+        displayName: "Options",
+        name: "researchOptions",
+        type: "collection",
+        placeholder: "Add Option",
+        default: {},
+        displayOptions: { show: { operation: ["research"] } },
+        options: [
+          {
+            displayName: "Length",
+            name: "length",
+            type: "options",
+            options: [
+              { name: "Short", value: "short" },
+              { name: "Standard", value: "standard" },
+              { name: "Long", value: "long" },
+            ],
+            default: "standard",
+            description: "How long the report is",
+          },
+          {
+            displayName: "Most Minutes to Wait",
+            name: "max_wait_minutes",
+            type: "number",
+            typeOptions: { minValue: 1, maxValue: 30 },
+            default: 10,
+            description: "When the report is not ready by then, the step returns it as it stands, with its Report ID to read later",
+          },
+          {
+            displayName: "Not These Sites",
+            name: "exclude_domains",
+            type: "string",
+            default: "",
+            placeholder: "e.g. example.com",
+            description: "Sites to leave out, separated by commas or newlines",
+          },
+          {
+            displayName: "Only These Sites",
+            name: "include_domains",
+            type: "string",
+            default: "",
+            placeholder: "e.g. example.com, example.org",
+            description: "Sites to read, separated by commas or newlines. Left empty, SpecStream chooses the sites.",
+          },
+          {
+            displayName: "Run Key",
+            name: "run_key",
+            type: "string",
+            default: "",
+            description:
+              "Identifies one report, 8 to 128 characters. A second request with the same key and question gets the report it already started and is not charged again. If left empty, the same question and depth within the same UTC hour share one report.",
+          },
+        ],
+      },
+      {
+        displayName: "Report ID",
+        name: "report_id",
+        type: "string",
+        default: "",
+        required: true,
+        placeholder: "e.g. rr_...",
+        description: "The Report ID returned by Research",
+        displayOptions: { show: { operation: ["getResearch"] } },
       },
       {
         displayName: "URLs",
@@ -360,13 +469,19 @@ export class Specstream implements INodeType {
       const operation = this.getNodeParameter("operation", i) as string;
       const fail = (message: string) => new NodeOperationError(this.getNode(), message, { itemIndex: i });
       // With allowNotFound, a 404 answer returns undefined. Every other HTTP, auth or network error is thrown.
-      const request = async (method: IHttpRequestMethods, path: string, body?: IDataObject, allowNotFound = false): Promise<IDataObject | undefined> => {
+      const request = async (
+        method: IHttpRequestMethods,
+        path: string,
+        body?: IDataObject,
+        allowNotFound = false,
+        headers: IDataObject = {},
+      ): Promise<IDataObject | undefined> => {
         let response: IDataObject | undefined;
         try {
           response = (await this.helpers.httpRequestWithAuthentication.call(this, "specstreamApi", {
             method,
             url: `${base}${path}`,
-            headers: { Accept: "application/json" },
+            headers: { Accept: "application/json", ...headers },
             body,
             json: true,
             disableFollowRedirect: true,
@@ -393,6 +508,60 @@ export class Specstream implements INodeType {
         if (speed !== "fast" && speed !== "default") throw fail('Speed must be "fast" or "default"');
         const query = `q=${encodeURIComponent(q)}${passages ? "&passages=true" : ""}${speed === "fast" ? "&speed=fast" : ""}`;
         const data = await call("GET", `/v1/web-search?${query}`);
+        out.push({ json: data, pairedItem: { item: i } });
+        continue;
+      }
+
+      if (operation === "research") {
+        const input = String(this.getNodeParameter("research_input", i) || "").trim();
+        if (!input || input.length > 15000) throw fail("Question must be 1 to 15,000 characters");
+        const depth = String(this.getNodeParameter("research_depth", i, "quick") || "quick");
+        // The depth sets the price, so it is never guessed.
+        if (!RESEARCH_DEPTHS.includes(depth)) throw fail('Depth must be "quick", "standard" or "deep"');
+        const options = this.getNodeParameter("researchOptions", i, {}) as IDataObject;
+        const body: IDataObject = { input, depth, metadata: { source: "n8n" } };
+        const length = String(options.length ?? "").trim();
+        if (length) {
+          if (!["short", "standard", "long"].includes(length)) throw fail('Length must be "short", "standard" or "long"');
+          body.length = length;
+        }
+        const include = siteList(options.include_domains);
+        const exclude = siteList(options.exclude_domains);
+        if (include.length) body.include_domains = include;
+        if (exclude.length) body.exclude_domains = exclude;
+        const given = String(options.run_key ?? "").trim();
+        if (given && (given.length < 8 || given.length > 128)) throw fail("Run Key must be 8 to 128 characters");
+        // A retry after a lost answer gets the report it already started instead of buying another.
+        const key = runKey({ request: `research|${JSON.stringify(body)}`, count: 1, maxPrice: depth, override: given });
+        const started = (await request("POST", "/v1/research", body, false, { "Idempotency-Key": key })) as IDataObject;
+        const priceUsd = started.price_usd;
+        let run = started;
+        if (this.getNodeParameter("research_wait", i, true) !== false && started.id) {
+          const minutes = Math.min(30, Math.max(1, Number(options.max_wait_minutes ?? 10) || 10));
+          const deadline = Date.now() + minutes * 60_000;
+          const path = `/v1/research/${encodeURIComponent(String(started.id))}`;
+          while (!RESEARCH_ENDED.includes(String(run.status)) && Date.now() < deadline) {
+            await sleep(RESEARCH_POLL_MS);
+            run = await call("GET", path);
+          }
+        }
+        if (run.status === "payment_required") {
+          throw fail("Your SpecStream balance does not hold this report's price. Add to your balance at https://specstream.ai/pricing, then run the step again.");
+        }
+        if (run.status === "failed") {
+          const said = run.error && typeof (run.error as IDataObject).message === "string" ? String((run.error as IDataObject).message).trim() : "";
+          throw fail(said || "SpecStream could not write this report. Nothing was charged. Try again.");
+        }
+        out.push({ json: { ...run, price_usd: run.price_usd ?? priceUsd }, pairedItem: { item: i } });
+        continue;
+      }
+
+      if (operation === "getResearch") {
+        const raw = String(this.getNodeParameter("report_id", i) || "").trim();
+        // The ID itself, or an address that ends with it.
+        const id = raw.split(/[?#]/)[0].replace(/\/+$/, "").split("/").pop() || "";
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw fail("Enter the Report ID returned by Research");
+        const data = await call("GET", `/v1/research/${encodeURIComponent(id)}`);
         out.push({ json: data, pairedItem: { item: i } });
         continue;
       }
