@@ -15,6 +15,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The same npm as publish.yml, so a green run here means the publish job installs too.
+      - run: npm install -g npm@latest
       - run: npm ci
       - run: npm run lint
       - run: npm run build
